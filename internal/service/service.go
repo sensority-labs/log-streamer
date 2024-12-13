@@ -42,6 +42,7 @@ func logStreamer(ws *websocket.Conn, logDir, containerId string) {
 	file, err := os.Open(filename)
 	if err != nil {
 		sentry.CaptureException(err)
+		log.Default().Print(err)
 		if err := write(ws, websocket.TextMessage, []byte("Error reading logs for container: "+containerId)); err != nil {
 			log.Default().Printf("websocket write error: %v", err)
 			return
