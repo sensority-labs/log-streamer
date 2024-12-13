@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -40,7 +41,7 @@ func write(ws *websocket.Conn, msgType int, data []byte) error {
 	return nil
 }
 
-func logStreamer(ws *websocket.Conn, logDir, containerId string) {
+func logStreamer(ws *websocket.Conn, logDir, containerId string, tail int) {
 	filename := path.Join(logDir, containerId, containerId+"-json.log")
 	file, err := os.Open(filename)
 	if err != nil {
@@ -61,6 +62,7 @@ func logStreamer(ws *websocket.Conn, logDir, containerId string) {
 
 	reader := bufio.NewReader(file)
 
+	currentLine := 0
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -74,6 +76,10 @@ func logStreamer(ws *websocket.Conn, logDir, containerId string) {
 				return
 			}
 		}
+		currentLine++
+		if currentLine < tail {
+			continue
+		}
 		if err := write(ws, websocket.TextMessage, line); err != nil {
 			log.Default().Printf("websocket write error: %v", err)
 			return
@@ -84,6 +90,15 @@ func logStreamer(ws *websocket.Conn, logDir, containerId string) {
 func serveWs(logDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		containerId := r.PathValue("containerId")
+		linesToFetch := 100
+		tail := r.URL.Query().Get("tail")
+		if tail != "" {
+			if parsedLines, err := strconv.Atoi(tail); err == nil {
+				linesToFetch = parsedLines
+			} else {
+				log.Default().Printf("Error parsing tail query parameter, received: %s", tail)
+			}
+		}
 		ws, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			var handshakeError websocket.HandshakeError
@@ -94,7 +109,7 @@ func serveWs(logDir string) http.HandlerFunc {
 			return
 		}
 
-		go logStreamer(ws, logDir, containerId)
+		go logStreamer(ws, logDir, containerId, linesToFetch)
 	}
 }
 
