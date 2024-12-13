@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -60,37 +61,63 @@ func logStreamer(ws *websocket.Conn, logDir, containerId string, tail int) {
 		}
 	}(file)
 
-	reader := bufio.NewReader(file)
+	// Count the number of lines in the file
+	linesCount, err := lineCounter(file)
+	if err != nil {
+		log.Default().Print(err)
+		if err := write(ws, websocket.TextMessage, []byte("Error reading logs for container: "+containerId)); err != nil {
+			log.Default().Printf("websocket write error: %v", err)
+			return
+		}
+		return
+	}
+
+	// Seek to the beginning of the file after the counting
+	if _, err = file.Seek(0, 0); err != nil {
+		return
+	}
 
 	currentLine := 0
+	scanner := bufio.NewScanner(file)
+
 	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err.Error() == "EOF" {
-				time.Sleep(1 * time.Second)
+		for scanner.Scan() {
+			currentLine++
+			if currentLine <= linesCount-tail {
 				continue
 			}
-			log.Default().Print(err)
-			if err := write(ws, websocket.TextMessage, []byte("Log read error")); err != nil {
+			line := scanner.Bytes()
+			if err := write(ws, websocket.TextMessage, line); err != nil {
 				log.Default().Printf("websocket write error: %v", err)
 				return
 			}
 		}
-		currentLine++
-		if currentLine < tail {
-			continue
-		}
-		if err := write(ws, websocket.TextMessage, line); err != nil {
-			log.Default().Printf("websocket write error: %v", err)
+		// Check for scanning errors (other than EOF)
+		if err := scanner.Err(); err != nil {
+			log.Default().Print(err)
+			if err := write(ws, websocket.TextMessage, []byte("Error reading logs for container: "+containerId)); err != nil {
+				log.Default().Printf("websocket write error: %v", err)
+				return
+			}
 			return
 		}
+
+		// Wait and try to read new content
+		time.Sleep(1 * time.Second)
+
+		// Reset scanner for new content
+		if _, err := file.Seek(0, io.SeekCurrent); err != nil {
+			return
+		}
+		// Seek to the current position
+		scanner = bufio.NewScanner(file)
 	}
 }
 
 func serveWs(logDir string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		containerId := r.PathValue("containerId")
-		linesToFetch := 100
+		linesToFetch := 5
 		tail := r.URL.Query().Get("tail")
 		if tail != "" {
 			if parsedLines, err := strconv.Atoi(tail); err == nil {
