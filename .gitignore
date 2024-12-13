@@ -1,0 +1,6 @@
+# User-specific stuff
+.idea
+
+# Go workspace file
+go.work
+
